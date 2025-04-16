@@ -1,0 +1,6 @@
+python-dotenv
+pydantic
+langchain
+langchain_google_genai
+jinja2
+
