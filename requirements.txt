@@ -3,4 +3,6 @@ pydantic
 langchain
 langchain_google_genai
 jinja2
+langgraph
+IPython
 
