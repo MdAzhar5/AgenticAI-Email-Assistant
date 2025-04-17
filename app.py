@@ -39,14 +39,13 @@ Alice""",
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict, Literal, Annotated
 from langchain_google_genai.chat_models import ChatGoogleGenerativeAI
-from typing import Literal
 from pydantic import BaseModel, Field
 
 
-api_key = os.getenv("GOOGLE_API")
+os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API")
 
 # Initialize the model
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp', api_key=api_key)
+llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp')
 class Router(BaseModel):
     reasoning: str = Field(description="Step-by-step reasoning behind the classification.")
     classification: Literal["ignore", "respond", "notify"] = Field(
@@ -60,31 +59,6 @@ class Router(BaseModel):
 llm_router = llm.with_structured_output(Router)
 
 from prompts import triage_system_prompt, triage_user_prompt
-
-system_prompt = triage_system_prompt.format(
-    full_name=profile["full_name"],
-    name=profile["name"],
-    examples=None,
-    user_profile_background=profile["user_profile_background"],
-    triage_no=prompt_instructions["triage_rules"]["ignore"],
-    triage_notify=prompt_instructions["triage_rules"]["notify"],
-    triage_email=prompt_instructions["triage_rules"]["respond"],
-)
-
-user_prompt = triage_user_prompt.format(
-    author=email["from"],
-    to=email["to"],
-    subject=email["subject"],
-    email_thread=email["body"],
-)
-
-result = llm_router.invoke(
-    [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": user_prompt},
-    ]
-)
-#print(result)
 from langchain_core.tools import tool
 
 @tool
@@ -107,15 +81,61 @@ def check_calendar_availability(day: str) -> str:
     """Check calendar availability for a given day."""
     return f"Available times on {day}: 9:00 AM, 2:00 PM, 4:00 PM"
 
-from prompts import agent_system_prompt
+
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langgraph.store.memory import InMemoryStore
+
+embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
+
+store = InMemoryStore(
+    index={"embed": embeddings}
+)
+
+from langmem import create_manage_memory_tool, create_search_memory_tool
+manage_memory_tool = create_manage_memory_tool(
+    namespace=(
+        "email_assistant", 
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+search_memory_tool = create_search_memory_tool(
+    namespace=(
+        "email_assistant",
+        "{langgraph_user_id}",
+        "collection"
+    )
+)
+
+agent_system_prompt_memory = """
+< Role >
+You are {full_name}'s executive assistant. You are a top-notch executive assistant who cares about {name} performing as well as possible.
+</ Role >
+
+< Tools >
+You have access to the following tools to help manage {name}'s communications and schedule:
+
+1. write_email(to, subject, content) - Send emails to specified recipients
+2. schedule_meeting(attendees, subject, duration_minutes, preferred_day) - Schedule calendar meetings
+3. check_calendar_availability(day) - Check available time slots for a given day
+4. manage_memory - Store any relevant information about contacts, actions, discussion, etc. in memory for future reference
+5. search_memory - Search for any relevant information that may have been stored in memory
+</ Tools >
+
+< Instructions >
+{instructions}
+</ Instructions >
+"""
+
+
 def create_prompt(state):
     return [
         {
             "role": "system", 
-            "content": agent_system_prompt.format(
-                instructions=prompt_instructions["agent_instructions"],
+            "content": agent_system_prompt_memory.format(
+                instructions=prompt_instructions["agent_instructions"], 
                 **profile
-                )
+            )
         }
     ] + state['messages']
 
@@ -123,17 +143,37 @@ def create_prompt(state):
 
 from langgraph.prebuilt import create_react_agent
 
-tools =  [write_email, schedule_meeting, check_calendar_availability]
-agent =  create_react_agent(ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp', api_key=api_key), tools=tools, prompt=create_prompt)
-response = agent.invoke(
-
-    {"messages":[{
-        "role":"user",
-        "content": "Whats my availability for tuesday?"
-    }]}
+tools= [
+    write_email, 
+    schedule_meeting,
+    check_calendar_availability,
+    manage_memory_tool,
+    search_memory_tool
+]
+response_agent = create_react_agent(
+    ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp'),
+    tools=tools,
+    prompt=create_prompt,
+    # Use this to ensure the store is passed to the agent 
+    store=store
 )
-response["messages"][-1].pretty_print()
+config = {"configurable": {"langgraph_user_id": "lance"}}
+response = response_agent.invoke(
+    {"messages": [{"role": "user", "content": "Jim is my friend"}]},
+    config=config
+)
+for m in response["messages"]:
+    m.pretty_print()
 
+response = response_agent.invoke(
+    {"messages": [{"role": "user", "content": "who is jim?"}]},
+    config=config
+)
+for m in response["messages"]:
+    m.pretty_print()
+
+store.list_namespaces()
+store.search(('email_assistant', 'lance', 'collection'))
 
 from langgraph.graph import add_messages
 
@@ -143,12 +183,10 @@ class State(TypedDict):
 
 
 
-from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from typing import Literal
 from IPython.display import Image, display
-
 
 
 def triage_router(state: State) -> Command[
@@ -206,45 +244,10 @@ def triage_router(state: State) -> Command[
 
 email_agent = StateGraph(State)
 email_agent = email_agent.add_node(triage_router)
-email_agent = email_agent.add_node("response_agent", agent)
+email_agent = email_agent.add_node("response_agent", response_agent)
 email_agent = email_agent.add_edge(START, "triage_router")
-email_agent = email_agent.compile()
+email_agent = email_agent.compile(store=store)
 #display(Image(email_agent.get_graph(xray=True).draw_mermaid_png()))
-
-email_input = {
-    "author": "Marketing Team <marketing@amazingdeals.com>",
-    "to": "John Doe <john.doe@company.com>",
-    "subject": "🔥 EXCLUSIVE OFFER: Limited Time Discount on Developer Tools! 🔥",
-    "email_thread": """Dear Valued Developer,
-
-Don't miss out on this INCREDIBLE opportunity! 
-
-🚀 For a LIMITED TIME ONLY, get 80% OFF on our Premium Developer Suite! 
-
-✨ FEATURES:
-- Revolutionary AI-powered code completion
-- Cloud-based development environment
-- 24/7 customer support
-- And much more!
-
-💰 Regular Price: $999/month
-🎉 YOUR SPECIAL PRICE: Just $199/month!
-
-🕒 Hurry! This offer expires in:
-24 HOURS ONLY!
-
-Click here to claim your discount: https://amazingdeals.com/special-offer
-
-Best regards,
-Marketing Team
----
-To unsubscribe, click here
-""",
-}
-
-
-response = email_agent.invoke({"email_input": email_input})
-
 email_input = {
     "author": "Alice Smith <alice.smith@company.com>",
     "to": "John Doe <john.doe@company.com>",
@@ -261,6 +264,27 @@ Thanks!
 Alice""",
 }
 
-response = email_agent.invoke({"email_input": email_input})
+response = email_agent.invoke(
+    {"email_input": email_input},
+    config=config
+)
+print("+++++++++++++++Main Email Response+++++++++++++++++++++++")
 for m in response["messages"]:
     m.pretty_print()
+
+
+email_input = {
+    "author": "Alice Smith <alice.smith@company.com>",
+    "to": "John Doe <john.doe@company.com>",
+    "subject": "Follow up",
+    "email_thread": """Hi John,
+
+Any update on my previous ask?""",
+}
+response = email_agent.invoke({"email_input": email_input}, config=config)
+print("+++++++++++++++FollowUp Email Response+++++++++++++++++++++++")
+for m in response["messages"]:
+    m.pretty_print()
+
+
+

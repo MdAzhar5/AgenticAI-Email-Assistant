@@ -5,4 +5,7 @@ langchain_google_genai
 jinja2
 langgraph
 IPython
+langmem
+sentence_transformers
+
 
