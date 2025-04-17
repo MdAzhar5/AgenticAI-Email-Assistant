@@ -277,7 +277,7 @@ email_input = {
     "author": "Alice Smith <alice.smith@company.com>",
     "to": "John Doe <john.doe@company.com>",
     "subject": "Follow up",
-    "email_thread": """Hi John,
+    "email_thread": """Hi John, 
 
 Any update on my previous ask?""",
 }
