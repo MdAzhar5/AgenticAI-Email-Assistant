@@ -1,11 +1,13 @@
 python-dotenv
 pydantic
 langchain
-langchain_google_genai
+langchain-groq
 jinja2
 langgraph
+langchain_huggingface
 IPython
 langmem
 sentence_transformers
+langchain-deepseek
 
 

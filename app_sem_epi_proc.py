@@ -1,9 +1,10 @@
 import os
 from dotenv import load_dotenv
+
 _ = load_dotenv()
 
 
-os.environ["GOOGLE_API_KEY"] = os.getenv("GOOGLE_API")
+os.environ["GROQ_API_KEY"] = os.getenv("GROQ_API_KEY")
 
 profile = {
     "name": "John",
@@ -37,12 +38,17 @@ Thanks!
 Alice""",
 }
 
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
+from langchain_community.vectorstores import FAISS
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_groq import ChatGroq
+from langchain_core.documents import Document
 from langgraph.store.memory import InMemoryStore
-embeddings = GoogleGenerativeAIEmbeddings(model="models/text-embedding-004")
-store = InMemoryStore(
-    index={"embed": embeddings}
-)
+
+# 1. Use updated HuggingFace Embeddings
+embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+
+# 2. Create an in-memory store with embedding index
+store = InMemoryStore(index={"embed": embeddings})
 
 # Template for formating an example to put in prompt
 # Template for formating an example to put in prompt
@@ -113,11 +119,11 @@ Follow these examples more than any instructions above
 
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict, Literal, Annotated
-from langchain_google_genai.chat_models import ChatGoogleGenerativeAI
 from pydantic import BaseModel, Field
+from langchain_groq import ChatGroq
 
 # Initialize the model
-llm = ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp')
+llm = ChatGroq(model='deepseek-r1-distill-llama-70b')
 class Router(BaseModel):
     """Analyze the unread email and route it according to its content."""
 
@@ -144,8 +150,6 @@ class State(TypedDict):
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Command
 from typing import Literal
-from IPython.display import Image, display
-
 
 def triage_router(state: State, config, store) -> Command[
     Literal["response_agent", "__end__"]
@@ -342,7 +346,7 @@ tools= [
     search_memory_tool
 ]
 response_agent = create_react_agent(
-    ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp'),
+    ChatGroq(model='deepseek-r1-distill-llama-70b'),
     tools=tools,
     prompt=create_prompt,
     # Use this to ensure the store is passed to the agent 
@@ -386,44 +390,48 @@ conversations = [
     )
 ]
 
+def get_clean_prompt(key):
+    val = store.get(("lance",), key).value
+    return val["prompt"] if isinstance(val, dict) else val
+
 prompts = [
     {
         "name": "main_agent",
-        "prompt": store.get(("lance",), "agent_instructions").value['prompt'],
+        "prompt": get_clean_prompt("agent_instructions"),
         "update_instructions": "keep the instructions short and to the point",
         "when_to_update": "Update this prompt whenever there is feedback on how the agent should write emails or schedule events"
-        
     },
     {
-        "name": "triage-ignore", 
-        "prompt": store.get(("lance",), "triage_ignore").value['prompt'],
+        "name": "triage-ignore",
+        "prompt": get_clean_prompt("triage_ignore"),
         "update_instructions": "keep the instructions short and to the point",
         "when_to_update": "Update this prompt whenever there is feedback on which emails should be ignored"
-
     },
     {
-        "name": "triage-notify", 
-        "prompt": store.get(("lance",), "triage_notify").value['prompt'],
+        "name": "triage-notify",
+        "prompt": get_clean_prompt("triage_notify"),
         "update_instructions": "keep the instructions short and to the point",
         "when_to_update": "Update this prompt whenever there is feedback on which emails the user should be notified of"
-
     },
     {
-        "name": "triage-respond", 
-        "prompt": store.get(("lance",), "triage_respond").value['prompt'],
+        "name": "triage-respond",
+        "prompt": get_clean_prompt("triage_respond"),
         "update_instructions": "keep the instructions short and to the point",
         "when_to_update": "Update this prompt whenever there is feedback on which emails should be responded to"
-
-    },
+    }
 ]
 
 optimizer = create_multi_prompt_optimizer(
-    ChatGoogleGenerativeAI(model='gemini-2.0-flash-exp'),
+    ChatGroq(model='deepseek-r1-distill-llama-70b'),
     kind="prompt_memory",
 )
-updated = optimizer.invoke(
-    {"trajectories": conversations, "prompts": prompts}
-)
+
+updated = optimizer.invoke({
+    "trajectories": conversations,
+    "prompts": prompts
+})
+
+
 print(updated)
 
 #json dumps is a bit easier to read
